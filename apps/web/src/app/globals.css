@@ -1,0 +1,14 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-brew-50: #faf6f2;
+  --color-brew-100: #f1e7dc;
+  --color-brew-500: #8b5e3c;
+  --color-brew-700: #5c3b22;
+  --color-brew-900: #2e1d10;
+}
+
+body {
+  background: var(--color-brew-50);
+  color: var(--color-brew-900);
+}

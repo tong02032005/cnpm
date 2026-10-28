@@ -1,0 +1,47 @@
+# Chạy cả hệ thống ở local: docker compose up --build
+# Web: http://localhost:3000 · API: http://localhost:3001/health
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: brewlite
+      POSTGRES_PASSWORD: brewlite
+      POSTGRES_DB: brewlite
+    ports:
+      - '5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U brewlite']
+      interval: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://brewlite:brewlite@db:5432/brewlite
+      JWT_SECRET: local-dev-secret
+      CORS_ORIGIN: http://localhost:3000
+    # Local: migrate + seed dữ liệu mẫu (seed bỏ qua nếu đã có dữ liệu)
+    command: ['sh', '-c', 'node dist/migrate.js && node dist/seed.js && node dist/main.js']
+    ports:
+      - '3001:3001'
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:3001
+    ports:
+      - '3000:3000'
+    depends_on:
+      - api
+
+volumes:
+  pgdata:

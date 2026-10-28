@@ -1,0 +1,52 @@
+{
+  "name": "api",
+  "private": true,
+  "scripts": {
+    "dev": "node --watch -r ts-node/register/transpile-only src/main.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/main.js",
+    "start:prod": "node dist/migrate.js && node dist/main.js",
+    "migrate": "ts-node --transpile-only src/migrate.ts",
+    "migration:generate": "typeorm-ts-node-commonjs migration:generate -d src/data-source.ts",
+    "seed": "ts-node --transpile-only src/seed.ts",
+    "test": "jest --runInBand"
+  },
+  "dependencies": {
+    "@nestjs/common": "11.2.8",
+    "@nestjs/core": "11.2.8",
+    "@nestjs/jwt": "^11.0.0",
+    "@nestjs/platform-express": "11.2.8",
+    "@nestjs/typeorm": "11.0.3",
+    "bcryptjs": "^3.0.2",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.2",
+    "pg": "^8.16.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "typeorm": "0.3.31"
+  },
+  "devDependencies": {
+    "@nestjs/testing": "11.2.8",
+    "@types/express": "^5.0.0",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^22.0.0",
+    "@types/supertest": "^6.0.3",
+    "jest": "^30.0.0",
+    "supertest": "^7.1.0",
+    "ts-jest": "^29.4.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.0"
+  },
+  "jest": {
+    "preset": "ts-jest",
+    "testEnvironment": "node",
+    "roots": [
+      "<rootDir>/src",
+      "<rootDir>/test"
+    ],
+    "testTimeout": 30000,
+    "setupFiles": [
+      "<rootDir>/test/setup-env.ts"
+    ]
+  }
+}

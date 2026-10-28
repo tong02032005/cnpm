@@ -1,0 +1,93 @@
+name: CD
+
+# Push/Tag → Lint & Test → Build → Docker image → Push GHCR → Deploy (Render) → Smoke test → Rollback nếu lỗi
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+jobs:
+  quality:
+    uses: ./.github/workflows/ci.yml
+
+  image:
+    needs: quality
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}-api
+          tags: |
+            type=sha,format=long
+            type=semver,pattern={{version}}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: GIT_SHA=${{ github.sha }}
+
+  deploy:
+    needs: image
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      packages: write
+    env:
+      # Secret/variable cấu hình trong GitHub: Settings → Environments → production
+      DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+      API_URL: ${{ vars.API_URL }}
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Deploy image to Render
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}-api"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          curl -fsS -X POST "${DEPLOY_HOOK}&imgURL=${IMAGE}:sha-${GITHUB_SHA}" > /dev/null
+          echo "Deployed ${IMAGE}:sha-${GITHUB_SHA}"
+
+      - name: Smoke test
+        # Chờ /health trả đúng commit SHA mới (tối đa 5 phút), rồi kiểm tra /products
+        run: |
+          for i in $(seq 1 30); do
+            version=$(curl -fsS "$API_URL/health" | jq -r .version || true)
+            if [ "$version" = "$GITHUB_SHA" ]; then
+              curl -fsS "$API_URL/products" > /dev/null && echo "Smoke test OK" && exit 0
+            fi
+            sleep 10
+          done
+          echo "Smoke test failed" && exit 1
+
+      - name: Mark image as last known good
+        # Tag :prod luôn trỏ tới bản đã qua smoke test gần nhất; rollback dùng tag này.
+        run: docker buildx imagetools create -t "$IMAGE:prod" "$IMAGE:sha-$GITHUB_SHA"
+
+      - name: Rollback to last known good image
+        if: failure()
+        run: |
+          if docker buildx imagetools inspect "$IMAGE:prod" > /dev/null 2>&1; then
+            curl -fsS -X POST "${DEPLOY_HOOK}&imgURL=${IMAGE}:prod" > /dev/null
+            echo "Rolled back to ${IMAGE}:prod"
+          else
+            echo "Chưa có bản :prod nào (lần deploy đầu tiên) - rollback thủ công theo README"
+          fi
