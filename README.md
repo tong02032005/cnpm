@@ -42,3 +42,5 @@ Truy cập: http://localhost:3001
 
 - frontend: giao diện người dùng
 - backend: máy chủ và API
+
+Ứng dụng chạy bên trong docker
