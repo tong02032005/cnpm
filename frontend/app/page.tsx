@@ -1,80 +1,90 @@
-/*
-// Nội dung mặc định khi tạo project
-import Image from "next/image";
+'use client';
 
-export default function Home() {
+// Task 3: trang Menu – lưới sản phẩm, có trạng thái loading / empty / lỗi.
+import Image from 'next/image';
+import Link from 'next/link';
+import { useCallback, useEffect, useState } from 'react';
+import { ErrorBox } from '@/components/ui';
+import { api } from '@/lib/api';
+import { formatVnd } from '@/lib/pricing';
+import type { Product } from '@/lib/types';
+
+type State = { kind: 'loading' } | { kind: 'error'; message: string } | { kind: 'ready'; products: Product[] };
+
+export default function MenuPage() {
+  const [state, setState] = useState<State>({ kind: 'loading' });
+
+  // Chỉ setState khi có kết quả (không setState đồng bộ trong effect)
+  const fetchMenu = useCallback(() => {
+    api<Product[]>('/products')
+      .then((products) => setState({ kind: 'ready', products }))
+      .catch((err: Error) => setState({ kind: 'error', message: err.message }));
+  }, []);
+  useEffect(fetchMenu, [fetchMenu]);
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
+    <>
+      <section className="mb-8">
+        <h1 className="text-4xl font-extrabold leading-tight tracking-tight">Menu đồ uống</h1>
+        <p className="mt-2 text-brew/80">Chọn món, size và topping. Thanh toán bằng ví hoặc thẻ, nhận tại quầy.</p>
+        <p className="mt-4 inline-block rounded-xl bg-foam px-3 py-2 text-sm">
+          Nhập mã <strong>WELCOME10</strong> để giảm 10% cho đơn từ 50.000đ.
+        </p>
+      </section>
+
+      {state.kind === 'loading' && (
+        <ul aria-busy="true" aria-label="Đang tải menu" className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+          {Array.from({ length: 8 }, (_, i) => (
+            <li key={i} className="animate-pulse overflow-hidden rounded-2xl bg-white">
+              <div className="aspect-[4/3] bg-foam" />
+              <div className="space-y-2 p-3">
+                <div className="h-4 w-2/3 rounded bg-foam" />
+                <div className="h-4 w-1/3 rounded bg-foam" />
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {state.kind === 'error' && (
+        <ErrorBox
+          message={`Không tải được menu. ${state.message}`}
+          onRetry={() => {
+            setState({ kind: 'loading' });
+            fetchMenu();
+          }}
         />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
-  );
-}
-*/
+      )}
 
-export default function Home() {
-  return (
-    <main className="flex min-h-screen items-center justify-center">
-      <h1 className="text-4xl font-bold">Hello</h1>
-    </main>
+      {state.kind === 'ready' && state.products.length === 0 && (
+        <div className="rounded-2xl border border-dashed border-brew/30 bg-white p-10 text-center">
+          <p className="text-lg font-bold">Menu đang trống</p>
+          <p className="mt-1 text-brew/70">Chưa có đồ uống nào đang bán. Bạn quay lại sau nhé.</p>
+        </div>
+      )}
+
+      {state.kind === 'ready' && state.products.length > 0 && (
+        <ul className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+          {state.products.map((p) => (
+            <li key={p.id}>
+              <Link
+                href={`/products/${p.id}`}
+                className="group block overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-foam transition hover:shadow-md hover:ring-brew/40"
+              >
+                <Image src={p.imageUrl} alt={p.name} width={600} height={450} unoptimized className="aspect-[4/3] w-full bg-foam object-cover" />
+                <div className="p-3">
+                  <p className="text-xs text-brew/60">{p.category}</p>
+                  <h2 className="font-bold group-hover:text-brew">{p.name}</h2>
+                  <div className="mt-1 flex items-center justify-between">
+                    <span className="font-bold text-brew">{formatVnd(p.price)}</span>
+                    {p.stock === 0 && <span className="text-xs font-semibold text-red-700">Hết hàng</span>}
+                  </div>
+                </div>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
   );
 }

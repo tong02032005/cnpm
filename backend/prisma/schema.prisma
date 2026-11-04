@@ -1,0 +1,143 @@
+// BrewLite – Assignment 1. Tên bảng/cột snake_case giống nhánh Loc.
+// Đổi cấu trúc: sửa file này → `npx prisma migrate dev --name ten_thay_doi` → commit thư mục migrations.
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  CUSTOMER
+  STAFF
+}
+
+/// Vòng đời đơn (Task 10a) – xem src/orders/order-state.ts
+enum OrderStatus {
+  PENDING
+  PAID
+  PAYMENT_FAILED
+  PREPARING
+  READY
+  COMPLETED
+  CANCELLED
+}
+
+enum PaymentMethod {
+  WALLET
+  CARD
+}
+
+enum PaymentStatus {
+  SUCCEEDED
+  FAILED
+  REFUNDED
+}
+
+enum PromotionType {
+  PERCENT
+  FIXED
+}
+
+model users {
+  id             Int                    @id @default(autoincrement())
+  full_name      String                 @db.VarChar(100)
+  email          String                 @unique @db.VarChar(255)
+  password_hash  String                 @db.VarChar(255)
+  role           UserRole               @default(CUSTOMER)
+  loyalty_points Int                    @default(0)
+  created_at     DateTime               @default(now()) @db.Timestamp(6)
+  orders         orders[]
+  loyalty        loyalty_transactions[]
+}
+
+model products {
+  id           Int           @id @default(autoincrement())
+  name         String        @db.VarChar(150)
+  description  String?
+  price        Int /// VND, số nguyên
+  image_url    String?       @db.VarChar(500)
+  category     String?       @db.VarChar(100)
+  is_available Boolean       @default(true)
+  stock        Int           @default(100) /// Task 10c: tồn kho theo sản phẩm
+  version      Int           @default(0) /// Task 10c: optimistic locking
+  created_at   DateTime      @default(now()) @db.Timestamp(6)
+  order_items  order_items[]
+}
+
+model toppings {
+  id    Int    @id @default(autoincrement())
+  name  String @unique @db.VarChar(100)
+  price Int
+}
+
+model promotions {
+  id          Int           @id @default(autoincrement())
+  code        String        @unique @db.VarChar(50)
+  type        PromotionType
+  value       Int /// PERCENT: 10 = 10%; FIXED: số tiền VND
+  min_order   Int           @default(0)
+  usage_limit Int?
+  used_count  Int           @default(0)
+  starts_at   DateTime      @default(now()) @db.Timestamp(6)
+  ends_at     DateTime      @db.Timestamp(6)
+  is_active   Boolean       @default(true)
+  orders      orders[]
+}
+
+model orders {
+  id           Int                    @id @default(autoincrement())
+  user_id      Int
+  status       OrderStatus            @default(PENDING)
+  subtotal     Int
+  discount     Int                    @default(0)
+  total        Int
+  promotion_id Int?
+  created_at   DateTime               @default(now()) @db.Timestamp(6)
+  updated_at   DateTime               @default(now()) @updatedAt @db.Timestamp(6)
+  user         users                  @relation(fields: [user_id], references: [id])
+  promotion    promotions?            @relation(fields: [promotion_id], references: [id])
+  items        order_items[]
+  payments     payments[]
+  loyalty      loyalty_transactions[]
+}
+
+model order_items {
+  id           Int      @id @default(autoincrement())
+  order_id     Int
+  product_id   Int
+  product_name String   @db.VarChar(150)
+  size         String   @db.VarChar(1)
+  quantity     Int
+  unit_price   Int
+  line_total   Int
+  toppings     Json     @default("[]") /// [{ "id": 1, "name": "Trân châu", "price": 7000 }]
+  order        orders   @relation(fields: [order_id], references: [id], onDelete: Cascade)
+  product      products @relation(fields: [product_id], references: [id])
+}
+
+model payments {
+  id              Int           @id @default(autoincrement())
+  order_id        Int
+  idempotency_key String        @unique @db.VarChar(100) /// Task 10b
+  method          PaymentMethod
+  status          PaymentStatus
+  amount          Int
+  created_at      DateTime      @default(now()) @db.Timestamp(6)
+  order           orders        @relation(fields: [order_id], references: [id])
+}
+
+model loyalty_transactions {
+  id         Int      @id @default(autoincrement())
+  user_id    Int
+  order_id   Int
+  points     Int /// dương: cộng khi PAID; âm: thu hồi khi hủy đơn đã trả
+  created_at DateTime @default(now()) @db.Timestamp(6)
+  user       users    @relation(fields: [user_id], references: [id])
+  order      orders   @relation(fields: [order_id], references: [id])
+}

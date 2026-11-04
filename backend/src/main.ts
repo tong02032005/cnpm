@@ -1,10 +1,18 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module.js';
+import { configureApp } from './setup.js';
+
+// Đọc backend/.env khi chạy local; trong Docker biến môi trường được truyền sẵn.
+try {
+  process.loadEnvFile();
+} catch {
+  // không có file .env
+}
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
-  await app.listen(process.env.PORT ?? 3001); 
-  // đổi thành port 3001 nếu frontend lấy port 3000 trước, 
-  // mặc định khi chạy sẽ ra Hello wordl!
+  const app = configureApp(await NestFactory.create(AppModule));
+  const port = Number(process.env.PORT ?? 3001);
+  await app.listen(port);
+  console.log(`BrewLite API đang chạy: http://localhost:${port}`);
 }
 await bootstrap();
