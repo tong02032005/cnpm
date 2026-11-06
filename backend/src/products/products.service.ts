@@ -3,6 +3,7 @@ import type { products as ProductRow } from '../generated/prisma/client.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { SIZES } from '../orders/pricing.js';
 import { cupsLeft } from '../stocks/stock.js';
+import { sweepExpiredOrders } from '../orders/order-expiry.js';
 
 /** Dữ liệu một món trả về cho frontend (Task 2 – US-02). */
 export interface Product {
@@ -35,6 +36,7 @@ export class ProductsService {
 
   /** Menu: chỉ các món đang bán, theo thứ tự id. */
   async findAll(): Promise<Product[]> {
+    await sweepExpiredOrders(this.prisma); // nguyên liệu của đơn quá hạn được trả lại → "Còn N ly" đúng
     const rows = await this.prisma.products.findMany({ where: { is_available: true }, orderBy: { id: 'asc' } });
     const left = await this.cupsLeft(rows.map((r) => r.id));
     return rows.map((r) => toProduct(r, left.get(r.id) ?? null));
@@ -42,6 +44,7 @@ export class ProductsService {
 
   /** Chi tiết một món kèm bảng size và topping để chọn (Task 4); không có → 404. */
   async findOne(id: number) {
+    await sweepExpiredOrders(this.prisma);
     const row = await this.prisma.products.findFirst({ where: { id, is_available: true } });
     if (!row) throw new NotFoundException(`Không tìm thấy sản phẩm ${id}`);
     const toppings = await this.prisma.toppings.findMany({ orderBy: { id: 'asc' } });

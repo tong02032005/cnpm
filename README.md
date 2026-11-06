@@ -144,12 +144,14 @@ docker compose exec db createdb -U brewlite brewlite_test
 | UNIT-T01 | Tính giá size/topping, khuyến mãi (hết hạn, hết lượt, đơn tối thiểu), điểm thưởng | `backend/src/orders/pricing.spec.ts` |
 | UNIT-T02 | **(a)** State machine chặn chuyển trạng thái sai | `backend/src/orders/order-state.spec.ts` |
 | UNIT-T03 | Tính lượng nguyên liệu theo công thức (size, số ly, topping), số ly còn pha được | `backend/src/stocks/stock.spec.ts` |
+| UNIT-T04 | Hạn thanh toán 15 phút, chỉ đơn PENDING / PAYMENT_FAILED mới hết hạn | `backend/src/orders/order-expiry.spec.ts` |
 | API-T01 | `GET /products` 8 món, phản hồi < 500ms; chi tiết; 404; 400 | `backend/test/products.e2e-spec.ts` |
 | INT-T01 | Đăng ký, đăng nhập, JWT, email trùng 409, sai mật khẩu 401, guard | `backend/test/auth.e2e-spec.ts` |
 | INT-T02 | Tạo đơn PENDING, backend tự tính giá, giữ chỗ nguyên liệu, validate dữ liệu sai 400, mã khuyến mãi | `backend/test/orders.e2e-spec.ts` |
 | INT-T03 | **(b)** Gửi lặp và gửi song song cùng `Idempotency-Key` chỉ tạo 1 giao dịch | `backend/test/payments.e2e-spec.ts` |
 | INT-T04 | **(c)** 20 khách đặt cùng lúc khi nguyên liệu chỉ đủ 5 ly: đúng 5 đơn thành công, không giữ vượt kho, thiếu nguyên liệu thì rollback | `backend/test/orders.e2e-spec.ts` |
 | INT-T05 | Thanh toán lỗi rồi thanh toán lại, điểm thưởng cộng 1 lần, đơn COMPLETED mới trừ nguyên liệu (một lần), hủy đơn đã trả (hoàn tiền, trả chỗ nguyên liệu, thu hồi điểm), phân quyền STAFF | `backend/test/payments.e2e-spec.ts` |
+| INT-T06 | Đơn quá 15 phút chưa thanh toán tự CANCELLED, trả nguyên liệu và lượt mã; thanh toán đơn quá hạn bị chặn (409); đơn còn hạn / đã PAID không bị đụng | `backend/test/order-expiry.e2e-spec.ts` |
 | FE-T01 | Tính giá trên trình duyệt, tổng giỏ hàng | `frontend/lib/pricing.test.ts` |
 
 ## 5. API
@@ -230,6 +232,10 @@ Authorization: Bearer <token>
   - **Tạo đơn:** tính lượng nguyên liệu cần, **giữ chỗ** bằng `UPDATE stocks SET reserved = reserved + n WHERE quantity - reserved >= n` (theo thứ tự `stock_id` để tránh deadlock). Thiếu nguyên liệu trả **409** và rollback cả đơn. Lượng đã giữ lưu ở `orders.stock_usage`.
   - **Đơn COMPLETED:** trừ thật (`quantity -= n`, `reserved -= n`). Chỉ xảy ra một lần vì COMPLETED là trạng thái cuối.
   - **Đơn CANCELLED:** trả chỗ (`reserved -= n`), kho thật không đổi. Đơn thanh toán lỗi vẫn giữ chỗ để khách thanh toán lại.
+- **Hạn thanh toán 15 phút** (`orders/order-expiry.ts`): mỗi đơn có `expires_at` = lúc tạo + 15 phút (thanh toán lỗi không được cộng thêm giờ). Trang thanh toán hiện đồng hồ đếm ngược.
+  - Đơn PENDING / PAYMENT_FAILED quá hạn **tự chuyển CANCELLED**, trả chỗ nguyên liệu và lượt mã khuyến mãi. Việc dọn chạy khi có request (xem menu, tạo đơn, xem đơn, thanh toán), không cần job nền.
+  - Thanh toán đơn quá hạn bị chặn (**409**) trước khi gọi cổng thanh toán, kể cả khi đơn chưa kịp được dọn.
+  - Dọn dẹp và thanh toán cùng khóa dòng đơn (`FOR UPDATE`, dọn dùng `SKIP LOCKED`), nên một đơn không thể vừa được trả tiền vừa bị hủy.
   - DB có `CHECK (0 <= reserved <= quantity)` nên kho không bao giờ âm, kể cả khi code có lỗi.
 - **(d) Khuyến mãi + điểm thưởng:** kiểm tra hạn, lượt dùng và đơn tối thiểu. Lượt dùng được giữ bằng `UPDATE … WHERE used_count < usage_limit` nên không vượt giới hạn. Cộng **1 điểm cho mỗi 10.000đ** khi đơn PAID. Hủy đơn đã trả thì hoàn tiền, trả chỗ nguyên liệu, thu hồi điểm và trả lượt mã.
 

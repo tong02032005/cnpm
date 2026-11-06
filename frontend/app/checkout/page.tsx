@@ -2,14 +2,56 @@
 
 // Task 8: thanh toán không tiền mặt (Ví / Thẻ – mô phỏng).
 // Luồng: POST /orders (nếu chưa có đơn) → POST /payments kèm Idempotency-Key.
-// Thanh toán lỗi → giữ nguyên giỏ, cho thanh toán lại cùng đơn.
+// Thanh toán lỗi → giữ nguyên giỏ, cho thanh toán lại cùng đơn trong thời hạn 15 phút.
 import { useRouter } from 'next/navigation';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Empty, ErrorBox, Loading, PrimaryButton } from '@/components/ui';
 import { api, ApiError } from '@/lib/api';
 import { cartTotal, formatVnd } from '@/lib/pricing';
 import { useAuth, useCart, useHydrated } from '@/lib/store';
 import type { Order, PaymentResult, User } from '@/lib/types';
+
+const EXPIRED_MESSAGE =
+  'Đơn đã quá 15 phút chưa thanh toán nên đã tự hủy. Giỏ hàng vẫn còn, bấm "Xác nhận thanh toán" để đặt lại.';
+
+/** Đồng hồ đếm ngược hạn thanh toán của đơn đang chờ; hết giờ thì báo cho trang cha. */
+function PaymentDeadline({ orderId, token, onExpired }: { orderId: number; token: string; onExpired: () => void }) {
+  const [expiresAt, setExpiresAt] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    let alive = true;
+    api<Order>(`/orders/${orderId}`, { token })
+      .then((o) => {
+        if (!alive) return;
+        if (o.status === 'CANCELLED') onExpired();
+        else setExpiresAt(Date.parse(o.expires_at));
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [orderId, token, onExpired]);
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const left = expiresAt === null ? null : Math.max(0, expiresAt - now);
+  useEffect(() => {
+    if (left === 0) onExpired();
+  }, [left, onExpired]);
+
+  if (left === null) return null;
+  const mm = String(Math.floor(left / 60_000)).padStart(2, '0');
+  const ss = String(Math.floor((left % 60_000) / 1000)).padStart(2, '0');
+  return (
+    <p role="timer" className="rounded-2xl bg-amber-50 p-4 text-sm text-amber-900">
+      Đơn #{orderId} được giữ trong <strong className="tabular-nums">{mm}:{ss}</strong>. Quá thời gian này đơn sẽ tự hủy.
+    </p>
+  );
+}
 
 const METHODS = [
   { value: 'WALLET', title: 'Ví điện tử', hint: 'MoMo, ZaloPay… (mô phỏng)' },
@@ -30,6 +72,13 @@ export default function CheckoutPage() {
   const [busy, setBusy] = useState(false);
   // Giữ key tới khi nhận được phản hồi: mất mạng rồi bấm lại vẫn dùng key cũ → không trừ tiền 2 lần (Task 10b)
   const idempotencyKey = useRef<string | null>(null);
+
+  // Hết hạn: bỏ đơn cũ (backend đã/ sẽ tự hủy), lần bấm sau tạo đơn mới từ giỏ hàng hiện tại
+  const onExpired = useCallback(() => {
+    setPendingOrder(null);
+    setOrderTotal(null);
+    setError(EXPIRED_MESSAGE);
+  }, [setPendingOrder]);
 
   useEffect(() => {
     if (hydrated && !token) router.replace('/login?next=/checkout');
@@ -95,6 +144,7 @@ export default function CheckoutPage() {
     } catch (err) {
       // Lỗi 4xx: yêu cầu đã bị từ chối hẳn → lần sau dùng key mới. Lỗi mạng/5xx: giữ key cũ.
       if (err instanceof ApiError && err.status >= 400 && err.status < 500) idempotencyKey.current = null;
+      if (err instanceof ApiError && err.status === 409 && err.message.includes('hết hạn')) return onExpired();
       showError(err);
     } finally {
       setBusy(false);
@@ -161,6 +211,7 @@ export default function CheckoutPage() {
         </label>
       </fieldset>
 
+      {pendingOrderId && <PaymentDeadline key={pendingOrderId} orderId={pendingOrderId} token={token} onExpired={onExpired} />}
       {error && <ErrorBox message={error} />}
       <PrimaryButton onClick={pay} disabled={busy}>
         {busy ? 'Đang xử lý…' : pendingOrderId ? `Thanh toán lại ${formatVnd(total)}` : `Xác nhận thanh toán ${formatVnd(total)}`}

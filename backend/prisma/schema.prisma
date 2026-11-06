@@ -129,6 +129,7 @@ model orders {
   total        Int
   promotion_id Int?
   stock_usage  Json                   @default("[]") /// nguyên liệu đã giữ: [{ "stock_id": 1, "quantity": 36 }]
+  expires_at   DateTime               @db.Timestamp(6) /// hạn thanh toán; quá hạn mà chưa PAID → tự CANCELLED
   created_at   DateTime               @default(now()) @db.Timestamp(6)
   updated_at   DateTime               @default(now()) @updatedAt @db.Timestamp(6)
   user         users                  @relation(fields: [user_id], references: [id])
@@ -136,6 +137,8 @@ model orders {
   items        order_items[]
   payments     payments[]
   loyalty      loyalty_transactions[]
+
+  @@index([status, expires_at])
 }
 
 model order_items {

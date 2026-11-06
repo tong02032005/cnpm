@@ -39,6 +39,8 @@ export interface Order {
   discount: number;
   total: number;
   created_at: string;
+  /** Hạn thanh toán (15 phút sau lúc tạo); quá hạn mà chưa trả tiền thì backend tự hủy đơn. */
+  expires_at: string;
   items: {
     id: number;
     product_name: string;

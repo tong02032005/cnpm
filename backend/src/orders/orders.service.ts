@@ -9,6 +9,7 @@ import { OrderStatus } from '../generated/prisma/enums.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { assertTransition } from './order-state.js';
+import { orderExpiresAt, sweepExpiredOrders } from './order-expiry.js';
 import { CreateOrderDto } from './orders.dto.js';
 import { promotionDiscount, unitPrice } from './pricing.js';
 import { consumeStock, releaseStock, reserveStock, stockUsage, type StockUse } from '../stocks/stock.js';
@@ -35,7 +36,8 @@ export class OrdersService {
    * tự tính lại giá → kiểm tra/giữ lượt mã khuyến mãi → giữ chỗ nguyên liệu theo công thức (Task 10c) → lưu đơn.
    * Lỗi ở bất kỳ bước nào thì rollback toàn bộ, không giữ nguyên liệu nào.
    */
-  create(userId: number, dto: CreateOrderDto) {
+  async create(userId: number, dto: CreateOrderDto) {
+    await sweepExpiredOrders(this.prisma); // trả nguyên liệu của đơn quá hạn trước khi giữ chỗ cho đơn mới
     return this.prisma.$transaction(
       async (tx) => {
         const productIds = [...new Set(dto.items.map((i) => i.productId))];
@@ -67,6 +69,7 @@ export class OrdersService {
         const subtotal = lines.reduce((sum, l) => sum + l.line_total, 0);
 
         const { discount, promotionId } = await this.applyPromotion(tx, dto.promoCode, subtotal);
+        const createdAt = new Date();
 
         // Giữ chỗ nguyên liệu (chưa trừ kho thật – trừ khi đơn COMPLETED)
         const recipes = await tx.recipes.findMany({
@@ -87,6 +90,8 @@ export class OrdersService {
             total: subtotal - discount,
             promotion_id: promotionId,
             stock_usage: usage as unknown as Prisma.InputJsonValue,
+            created_at: createdAt,
+            expires_at: orderExpiresAt(createdAt),
             items: { create: lines },
           },
           include: ORDER_INCLUDE,
@@ -96,7 +101,8 @@ export class OrdersService {
     );
   }
 
-  findMine(userId: number) {
+  async findMine(userId: number) {
+    await sweepExpiredOrders(this.prisma);
     return this.prisma.orders.findMany({
       where: { user_id: userId },
       include: { items: { orderBy: { id: 'asc' } } },
@@ -105,6 +111,7 @@ export class OrdersService {
   }
 
   async findOne(id: number, user: AuthUser) {
+    await sweepExpiredOrders(this.prisma);
     const order = await this.prisma.orders.findUnique({ where: { id }, include: ORDER_INCLUDE });
     // Đơn của người khác: trả 404 thay vì 403 để không lộ đơn nào tồn tại
     if (!order || (order.user_id !== user.sub && user.role !== 'STAFF')) {

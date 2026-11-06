@@ -5,6 +5,7 @@ import type { payments } from '../generated/prisma/client.js';
 import { OrderStatus } from '../generated/prisma/enums.js';
 import { assertTransition } from '../orders/order-state.js';
 import { lockOrder } from '../orders/orders.service.js';
+import { isExpired, sweepExpiredOrders } from '../orders/order-expiry.js';
 import { loyaltyPoints } from '../orders/pricing.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { MockPaymentGateway } from './mock-gateway.js';
@@ -28,6 +29,7 @@ export class PaymentsService {
 
     const previous = await this.prisma.payments.findUnique({ where: { idempotency_key: key } });
     if (previous) return this.replay(previous, user, dto);
+    await sweepExpiredOrders(this.prisma);
 
     try {
       return await this.prisma.$transaction(async (tx) => {
@@ -39,6 +41,12 @@ export class PaymentsService {
         // Request cùng key chạy song song và đã giữ khóa trước → trả kết quả của nó
         const winner = await tx.payments.findUnique({ where: { idempotency_key: key } });
         if (winner) return this.result(winner, order.status);
+
+        // Hết hạn thanh toán: chặn ngay cả khi chưa kịp dọn (không gọi cổng thanh toán, không trừ tiền)
+        const swept = order.status === OrderStatus.CANCELLED && order.expires_at < new Date(); // đã bị tự hủy
+        if (isExpired(order) || swept) {
+          throw new ConflictException(`Đơn #${order.id} đã hết hạn thanh toán. Vui lòng đặt lại đơn mới.`);
+        }
 
         assertTransition(order.status, OrderStatus.PAID); // chỉ đơn PENDING / PAYMENT_FAILED mới được trả tiền
 
