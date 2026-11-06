@@ -67,7 +67,8 @@ Sau đó sửa `WEB_PORT`, `API_PORT`, `DB_PORT` (ví dụ `4000`, `4001`, `5440
 | `demo@brewlite.local` | `demo123` | Khách hàng |
 | `staff@brewlite.local` | `staff123` | Nhân viên (chuyển trạng thái pha chế) |
 
-- **8 đồ uống:** Cà phê đen, Cà phê sữa, Bạc xỉu, Latte, Trà sữa trân châu, Trà đào, Matcha Latte, Chocolate đá. Mỗi món có 100 ly.
+- **8 đồ uống:** Cà phê đen, Cà phê sữa, Bạc xỉu, Latte, Trà sữa trân châu, Trà đào, Matcha Latte, Chocolate đá. Mỗi món có công thức (bảng `recipes`) theo từng size.
+- **Kho nguyên liệu** (bảng `stocks`): 11 nguyên liệu như cà phê hạt 2.000 g, sữa tươi 10.000 ml, trân châu 3.000 g, ly nhựa 500 cái. Menu hiện "Còn N ly" tính từ nguyên liệu còn lại.
 - **Size:** S giá gốc, M +5.000đ, L +10.000đ.
 - **Topping:** Trân châu 7.000đ, Pudding 8.000đ, Kem cheese 10.000đ.
 - **Mã khuyến mãi** `WELCOME10`: giảm 10% cho đơn từ 50.000đ.
@@ -142,12 +143,13 @@ docker compose exec db createdb -U brewlite brewlite_test
 | --- | --- | --- |
 | UNIT-T01 | Tính giá size/topping, khuyến mãi (hết hạn, hết lượt, đơn tối thiểu), điểm thưởng | `backend/src/orders/pricing.spec.ts` |
 | UNIT-T02 | **(a)** State machine chặn chuyển trạng thái sai | `backend/src/orders/order-state.spec.ts` |
+| UNIT-T03 | Tính lượng nguyên liệu theo công thức (size, số ly, topping), số ly còn pha được | `backend/src/stocks/stock.spec.ts` |
 | API-T01 | `GET /products` 8 món, phản hồi < 500ms; chi tiết; 404; 400 | `backend/test/products.e2e-spec.ts` |
 | INT-T01 | Đăng ký, đăng nhập, JWT, email trùng 409, sai mật khẩu 401, guard | `backend/test/auth.e2e-spec.ts` |
-| INT-T02 | Tạo đơn PENDING, backend tự tính giá, validate dữ liệu sai 400, mã khuyến mãi | `backend/test/orders.e2e-spec.ts` |
+| INT-T02 | Tạo đơn PENDING, backend tự tính giá, giữ chỗ nguyên liệu, validate dữ liệu sai 400, mã khuyến mãi | `backend/test/orders.e2e-spec.ts` |
 | INT-T03 | **(b)** Gửi lặp và gửi song song cùng `Idempotency-Key` chỉ tạo 1 giao dịch | `backend/test/payments.e2e-spec.ts` |
-| INT-T04 | **(c)** 20 khách đặt cùng lúc khi còn 5 ly: đúng 5 đơn thành công, kho về 0 | `backend/test/orders.e2e-spec.ts` |
-| INT-T05 | Thanh toán lỗi rồi thanh toán lại, điểm thưởng cộng 1 lần, hủy đơn đã trả (hoàn tiền, hoàn kho, thu hồi điểm), phân quyền STAFF | `backend/test/payments.e2e-spec.ts` |
+| INT-T04 | **(c)** 20 khách đặt cùng lúc khi nguyên liệu chỉ đủ 5 ly: đúng 5 đơn thành công, không giữ vượt kho, thiếu nguyên liệu thì rollback | `backend/test/orders.e2e-spec.ts` |
+| INT-T05 | Thanh toán lỗi rồi thanh toán lại, điểm thưởng cộng 1 lần, đơn COMPLETED mới trừ nguyên liệu (một lần), hủy đơn đã trả (hoàn tiền, trả chỗ nguyên liệu, thu hồi điểm), phân quyền STAFF | `backend/test/payments.e2e-spec.ts` |
 | FE-T01 | Tính giá trên trình duyệt, tổng giỏ hàng | `frontend/lib/pricing.test.ts` |
 
 ## 5. API
@@ -161,7 +163,7 @@ docker compose exec db createdb -U brewlite brewlite_test
 | POST | `/auth/login` | – | Đăng nhập, trả JWT |
 | GET | `/auth/me` | JWT | Thông tin tài khoản + điểm thưởng |
 | POST | `/promotions/validate` | – | Xem trước số tiền giảm của mã |
-| POST | `/orders` | JWT | Tạo đơn PENDING, trừ tồn kho |
+| POST | `/orders` | JWT | Tạo đơn PENDING, giữ chỗ nguyên liệu |
 | GET | `/orders/me` | JWT | Lịch sử đơn của tôi |
 | GET | `/orders/:id` | JWT (chủ đơn hoặc STAFF) | Chi tiết đơn |
 | PATCH | `/orders/:id/status` | STAFF; khách chỉ được hủy | Đổi trạng thái theo state machine |
@@ -189,7 +191,8 @@ Authorization: Bearer <token>
 │   ├── src/
 │   │   ├── auth/               # đăng ký, đăng nhập, JWT guard (Task 7)
 │   │   ├── products/           # menu, chi tiết (Task 2)
-│   │   ├── orders/             # tạo đơn, state machine, tính giá, tồn kho (Task 6, 10)
+│   │   ├── orders/             # tạo đơn, state machine, tính giá (Task 6, 10)
+│   │   ├── stocks/             # kho nguyên liệu: giữ chỗ, trừ kho, trả chỗ (Task 10c)
 │   │   ├── payments/           # thanh toán idempotent, cổng mô phỏng (Task 8, 10)
 │   │   ├── promotions/         # kiểm tra mã khuyến mãi (Task 10)
 │   │   ├── prisma/             # kết nối DB
@@ -223,8 +226,12 @@ Authorization: Bearer <token>
 
 - **(a) State machine** (`orders/order-state.ts`): `PENDING → PAID → PREPARING → READY → COMPLETED`; `PENDING → PAYMENT_FAILED → PAID` (thanh toán lại); có thể hủy (`CANCELLED`) từ PENDING, PAYMENT_FAILED hoặc PAID. Mọi lần đổi trạng thái đều qua `assertTransition`, chuyển sai trả **409**.
 - **(b) Thanh toán idempotent** (`payments/payments.service.ts`): header `Idempotency-Key` được lưu với ràng buộc UNIQUE trong DB. Gửi lại cùng key chỉ trả kết quả cũ. Dòng đơn bị khóa (`SELECT … FOR UPDATE`) nên hai request khác key cũng không trừ tiền hai lần.
-- **(c) Tồn kho khi đặt đồng thời** (`orders/orders.service.ts`): trừ kho trong transaction bằng **optimistic locking** (cột `version`), và trừ theo thứ tự `productId` để tránh deadlock. Đặt quá số còn lại trả **409**.
-- **(d) Khuyến mãi + điểm thưởng:** kiểm tra hạn, lượt dùng và đơn tối thiểu. Lượt dùng được giữ bằng `UPDATE … WHERE used_count < usage_limit` nên không vượt giới hạn. Cộng **1 điểm cho mỗi 10.000đ** khi đơn PAID. Hủy đơn đã trả thì hoàn tiền, hoàn kho, thu hồi điểm và trả lượt mã.
+- **(c) Kho nguyên liệu khi đặt đồng thời** (`stocks/stock.ts`): tồn kho tính theo **nguyên liệu** (bảng `stocks`), mỗi món có **công thức** theo size (bảng `recipes`, topping cũng có công thức).
+  - **Tạo đơn:** tính lượng nguyên liệu cần, **giữ chỗ** bằng `UPDATE stocks SET reserved = reserved + n WHERE quantity - reserved >= n` (theo thứ tự `stock_id` để tránh deadlock). Thiếu nguyên liệu trả **409** và rollback cả đơn. Lượng đã giữ lưu ở `orders.stock_usage`.
+  - **Đơn COMPLETED:** trừ thật (`quantity -= n`, `reserved -= n`). Chỉ xảy ra một lần vì COMPLETED là trạng thái cuối.
+  - **Đơn CANCELLED:** trả chỗ (`reserved -= n`), kho thật không đổi. Đơn thanh toán lỗi vẫn giữ chỗ để khách thanh toán lại.
+  - DB có `CHECK (0 <= reserved <= quantity)` nên kho không bao giờ âm, kể cả khi code có lỗi.
+- **(d) Khuyến mãi + điểm thưởng:** kiểm tra hạn, lượt dùng và đơn tối thiểu. Lượt dùng được giữ bằng `UPDATE … WHERE used_count < usage_limit` nên không vượt giới hạn. Cộng **1 điểm cho mỗi 10.000đ** khi đơn PAID. Hủy đơn đã trả thì hoàn tiền, trả chỗ nguyên liệu, thu hồi điểm và trả lượt mã.
 
 ## 8. Làm việc với database
 
@@ -250,6 +257,7 @@ cd backend && npx prisma studio                         # xem/sửa dữ liệu 
 | `port is already allocated` / `EADDRINUSE` | Cổng 3000/3001/5432 đang bị chương trình khác dùng | Tắt chương trình đó, hoặc đổi cổng trong `.env` (mục 1) |
 | `npm error Missing script: "dev"` ở backend | Backend dùng lệnh khác | `npm run start:dev` |
 | API trả `500 Internal server error` | DB chưa bật hoặc chưa tạo bảng | `docker compose up -d db` → `npm run db:migrate` → `npm run db:seed` |
+| Vừa pull bản có kho nguyên liệu, menu báo lỗi hoặc không hiện "Còn N ly" | DB cũ chưa có bảng `stocks`, `recipes` | `npm run db:migrate` → `npm run db:seed` (seed tự thêm kho + công thức, không đụng dữ liệu cũ). Docker thì `docker compose up -d --build` |
 | Web báo *Không kết nối được máy chủ* | Backend chưa chạy hoặc khác cổng | Mở http://localhost:3001/health; sửa `NEXT_PUBLIC_API_URL` |
 | `Can't reach database server` | Sai `DATABASE_URL` trong `backend/.env` | Kiểm tra cổng/mật khẩu khớp với DB đang chạy |
 | Docker báo *Virtual Machine Platform is not enabled* | Ảo hóa Windows đang tắt | PowerShell (Admin): `bcdedit /set hypervisorlaunchtype auto` rồi khởi động lại |

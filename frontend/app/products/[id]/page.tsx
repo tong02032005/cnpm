@@ -95,7 +95,7 @@ function ProductDetailView() {
           <p className="mt-2 text-brew/80">{product.description}</p>
           <p className="mt-3">
             Giá gốc: <strong>{formatVnd(product.price)}</strong>
-            <span className="ml-3 text-sm text-brew/60">Còn {product.stock} ly</span>
+            {product.stock !== null && <span className="ml-3 text-sm text-brew/60">Còn {product.stock} ly</span>}
           </p>
 
           <fieldset className="mt-6">

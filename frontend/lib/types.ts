@@ -10,7 +10,7 @@ export interface Product {
   price: number;
   imageUrl: string;
   category: string;
-  stock: number;
+  stock: number | null; // số ly còn pha được từ kho nguyên liệu; null = không giới hạn
 }
 
 export interface Topping {

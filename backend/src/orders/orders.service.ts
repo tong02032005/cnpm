@@ -1,6 +1,5 @@
 import {
   BadRequestException,
-  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -12,11 +11,10 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { assertTransition } from './order-state.js';
 import { CreateOrderDto } from './orders.dto.js';
 import { promotionDiscount, unitPrice } from './pricing.js';
+import { consumeStock, releaseStock, reserveStock, stockUsage, type StockUse } from '../stocks/stock.js';
 
 type Tx = Prisma.TransactionClient;
 
-// ponytail: hơn ~50 khách tranh cùng một món trong cùng lúc thì nên đổi sang UPDATE ... WHERE stock >= qty
-const MAX_STOCK_RETRIES = 50;
 /** Nhân viên chuyển trạng thái pha chế; PAID / PAYMENT_FAILED chỉ do PaymentsService đặt. */
 const STAFF_CAN_SET: OrderStatus[] = [
   OrderStatus.PREPARING,
@@ -34,8 +32,8 @@ export class OrdersService {
 
   /**
    * Tạo đơn PENDING (Task 6). Trong MỘT transaction:
-   * tự tính lại giá → kiểm tra/giữ lượt mã khuyến mãi → trừ tồn kho (optimistic locking, Task 10c) → lưu đơn.
-   * Lỗi ở bất kỳ bước nào thì rollback toàn bộ, không trừ kho.
+   * tự tính lại giá → kiểm tra/giữ lượt mã khuyến mãi → giữ chỗ nguyên liệu theo công thức (Task 10c) → lưu đơn.
+   * Lỗi ở bất kỳ bước nào thì rollback toàn bộ, không giữ nguyên liệu nào.
    */
   create(userId: number, dto: CreateOrderDto) {
     return this.prisma.$transaction(
@@ -70,12 +68,15 @@ export class OrdersService {
 
         const { discount, promotionId } = await this.applyPromotion(tx, dto.promoCode, subtotal);
 
-        // Cộng dồn số lượng theo sản phẩm, trừ kho theo thứ tự id để hai đơn chạy song song không deadlock
-        const qtyByProduct = new Map<number, number>();
-        for (const l of lines) qtyByProduct.set(l.product_id, (qtyByProduct.get(l.product_id) ?? 0) + l.quantity);
-        for (const [productId, qty] of [...qtyByProduct].sort(([a], [b]) => a - b)) {
-          await this.decrementStock(tx, productId, qty, products.get(productId)!.name);
-        }
+        // Giữ chỗ nguyên liệu (chưa trừ kho thật – trừ khi đơn COMPLETED)
+        const recipes = await tx.recipes.findMany({
+          where: { OR: [{ product_id: { in: productIds } }, { topping_id: { in: toppingIds } }] },
+        });
+        const usage = stockUsage(
+          lines.map((l) => ({ ...l, toppingIds: l.toppings.map((t) => t.id) })),
+          recipes,
+        );
+        await reserveStock(tx, usage);
 
         return tx.orders.create({
           data: {
@@ -85,6 +86,7 @@ export class OrdersService {
             discount,
             total: subtotal - discount,
             promotion_id: promotionId,
+            stock_usage: usage as unknown as Prisma.InputJsonValue,
             items: { create: lines },
           },
           include: ORDER_INCLUDE,
@@ -115,7 +117,7 @@ export class OrdersService {
   updateStatus(id: number, user: AuthUser, to: OrderStatus) {
     return this.prisma.$transaction(async (tx) => {
       await lockOrder(tx, id);
-      const order = await tx.orders.findUnique({ where: { id }, include: { items: true } });
+      const order = await tx.orders.findUnique({ where: { id } });
       if (!order || (order.user_id !== user.sub && user.role !== 'STAFF')) {
         throw new NotFoundException(`Không tìm thấy đơn ${id}`);
       }
@@ -123,14 +125,13 @@ export class OrdersService {
       if (!allowed.includes(to)) throw new ForbiddenException(`Bạn không được chuyển đơn sang ${to}`);
       assertTransition(order.status, to);
 
+      // Lượng nguyên liệu đã giữ lúc tạo đơn (không tính lại theo công thức hiện tại – công thức có thể đã sửa)
+      const usage = order.stock_usage as unknown as StockUse[];
+      // COMPLETED chỉ đạt được một lần (state machine + khóa đơn) nên kho chỉ bị trừ một lần
+      if (to === OrderStatus.COMPLETED) await consumeStock(tx, usage);
+
       if (to === OrderStatus.CANCELLED) {
-        // Hoàn kho
-        for (const item of order.items) {
-          await tx.products.update({
-            where: { id: item.product_id },
-            data: { stock: { increment: item.quantity }, version: { increment: 1 } },
-          });
-        }
+        await releaseStock(tx, usage);
         // Trả lượt mã khuyến mãi
         if (order.promotion_id) {
           await tx.promotions.update({ where: { id: order.promotion_id }, data: { used_count: { decrement: 1 } } });
@@ -169,23 +170,6 @@ export class OrdersService {
           });
     if (reserved.count !== 1) throw new BadRequestException('Mã khuyến mãi đã hết lượt dùng');
     return { discount: result.discount, promotionId: promo.id };
-  }
-
-  /**
-   * Trừ kho bằng optimistic locking (Task 10c): chỉ UPDATE khi `version` chưa đổi kể từ lúc đọc.
-   * Có đơn khác vừa trừ trước → version đã tăng → đọc lại và thử lại.
-   */
-  private async decrementStock(tx: Tx, productId: number, qty: number, name: string) {
-    for (let attempt = 0; attempt < MAX_STOCK_RETRIES; attempt++) {
-      const p = await tx.products.findUniqueOrThrow({ where: { id: productId } });
-      if (p.stock < qty) throw new ConflictException(`${name} chỉ còn ${p.stock} ly`);
-      const updated = await tx.products.updateMany({
-        where: { id: productId, version: p.version },
-        data: { stock: p.stock - qty, version: p.version + 1 },
-      });
-      if (updated.count === 1) return;
-    }
-    throw new ConflictException('Sản phẩm đang được đặt nhiều, vui lòng thử lại');
   }
 }
 

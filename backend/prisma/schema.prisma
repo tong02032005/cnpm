@@ -64,16 +64,46 @@ model products {
   image_url    String?       @db.VarChar(500)
   category     String?       @db.VarChar(100)
   is_available Boolean       @default(true)
-  stock        Int           @default(100) /// Task 10c: tồn kho theo sản phẩm
-  version      Int           @default(0) /// Task 10c: optimistic locking
   created_at   DateTime      @default(now()) @db.Timestamp(6)
   order_items  order_items[]
+  recipes      recipes[]
 }
 
 model toppings {
-  id    Int    @id @default(autoincrement())
-  name  String @unique @db.VarChar(100)
-  price Int
+  id      Int       @id @default(autoincrement())
+  name    String    @unique @db.VarChar(100)
+  price   Int
+  recipes recipes[]
+}
+
+/// Kho nguyên liệu (Task 10c). Số lượng là số nguyên theo đơn vị nhỏ nhất (g, ml, cái).
+/// Còn dùng được = quantity - reserved. CHECK trong migration: 0 <= reserved <= quantity.
+model stocks {
+  id            Int       @id @default(autoincrement())
+  name          String    @unique @db.VarChar(100)
+  unit          String    @db.VarChar(10)
+  quantity      Int /// lượng thật đang có trong kho
+  reserved      Int       @default(0) /// đã giữ cho các đơn chưa hoàn thành
+  low_threshold Int       @default(0) /// dưới mức này thì báo sắp hết
+  updated_at    DateTime  @default(now()) @updatedAt @db.Timestamp(6)
+  recipes       recipes[]
+}
+
+/// Công thức: 1 ly <món> size <S/M/L> (hoặc 1 phần <topping>, size = null) cần `quantity` <nguyên liệu>.
+/// CHECK trong migration: đúng một trong product_id / topping_id; món phải có size, topping thì không.
+model recipes {
+  id         Int       @id @default(autoincrement())
+  product_id Int?
+  topping_id Int?
+  size       String?   @db.VarChar(1)
+  stock_id   Int
+  quantity   Int
+  product    products? @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  topping    toppings? @relation(fields: [topping_id], references: [id], onDelete: Cascade)
+  stock      stocks    @relation(fields: [stock_id], references: [id])
+
+  @@unique([product_id, size, stock_id])
+  @@unique([topping_id, stock_id])
 }
 
 model promotions {
@@ -98,6 +128,7 @@ model orders {
   discount     Int                    @default(0)
   total        Int
   promotion_id Int?
+  stock_usage  Json                   @default("[]") /// nguyên liệu đã giữ: [{ "stock_id": 1, "quantity": 36 }]
   created_at   DateTime               @default(now()) @db.Timestamp(6)
   updated_at   DateTime               @default(now()) @updatedAt @db.Timestamp(6)
   user         users                  @relation(fields: [user_id], references: [id])

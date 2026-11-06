@@ -2,7 +2,7 @@ import type { INestApplication } from '@nestjs/common';
 import type { PrismaService } from '../src/prisma/prisma.service.js';
 import { bearer, createApp, register } from './helpers.js';
 
-// INT-T02, INT-T04 – Task 6 (tạo đơn) và Task 10c (tồn kho khi đặt đồng thời)
+// INT-T02, INT-T04 – Task 6 (tạo đơn) và Task 10c (giữ chỗ nguyên liệu khi đặt đồng thời)
 describe('Orders API', () => {
   let app: INestApplication;
   let prisma: PrismaService;
@@ -16,12 +16,18 @@ describe('Orders API', () => {
   afterAll(() => app.close());
 
   const order = (body: object, t = token) => http().post('/orders').set(bearer(t)).send(body);
+  const stock = (name: string) => prisma.stocks.findUniqueOrThrow({ where: { name } });
 
-  it('tạo đơn PENDING, backend tự tính giá (Latte M + trân châu ×2 = 94.000đ), trừ kho', async () => {
+  it('tạo đơn PENDING, backend tự tính giá (Latte M + trân châu ×2 = 94.000đ), giữ chỗ nguyên liệu theo công thức', async () => {
     const res = await order({ items: [{ productId: 4, size: 'M', quantity: 2, toppingIds: [1] }] }).expect(201);
     expect(res.body).toMatchObject({ id: expect.any(Number), status: 'PENDING', subtotal: 94000, discount: 0, total: 94000 });
     expect(res.body.items[0]).toMatchObject({ product_name: 'Latte', unit_price: 47000, line_total: 94000 });
-    expect((await prisma.products.findUniqueOrThrow({ where: { id: 4 } })).stock).toBe(98);
+    // Latte M: 18 g cà phê + 150 ml sữa tươi + 1 ly; trân châu 30 g/phần – nhân 2 ly. Kho thật chưa bị trừ.
+    expect(await stock('Cà phê hạt')).toMatchObject({ quantity: 2000, reserved: 36 });
+    expect(await stock('Sữa tươi')).toMatchObject({ quantity: 10000, reserved: 300 });
+    expect(await stock('Trân châu')).toMatchObject({ quantity: 3000, reserved: 60 });
+    expect(await stock('Ly nhựa')).toMatchObject({ quantity: 500, reserved: 2 });
+    expect(res.body.stock_usage).toHaveLength(4);
   });
 
   it('dữ liệu sai → 400: giỏ rỗng, số lượng ≤ 0, size lạ, sản phẩm không tồn tại, gửi kèm giá', async () => {
@@ -40,21 +46,33 @@ describe('Orders API', () => {
     await order({ items: [{ productId: 1, size: 'S', quantity: 1 }], promoCode: 'WELCOME10' }).expect(400);
   });
 
-  it('INT-T04: 20 khách đặt cùng lúc khi chỉ còn 5 ly → đúng 5 đơn thành công, không bán vượt kho', async () => {
-    await prisma.products.update({ where: { id: 6 }, data: { stock: 5 } });
+  it('INT-T04: 20 khách đặt cùng lúc khi nguyên liệu chỉ đủ 5 ly → đúng 5 đơn thành công, không giữ vượt kho', async () => {
+    // Trà đào size S cần 24 ml siro đào → 120 ml đủ đúng 5 ly
+    await prisma.stocks.update({ where: { name: 'Siro đào' }, data: { quantity: 120 } });
     const tokens = await Promise.all(Array.from({ length: 20 }, (_, i) => register(app, `race${i}@test.vn`)));
     const results = await Promise.all(tokens.map((t) => order({ items: [{ productId: 6, size: 'S', quantity: 1 }] }, t)));
 
     expect(results.filter((r) => r.status === 201)).toHaveLength(5);
-    expect(results.filter((r) => r.status === 409)).toHaveLength(15);
-    expect((await prisma.products.findUniqueOrThrow({ where: { id: 6 } })).stock).toBe(0);
+    const rejected = results.filter((r) => r.status === 409);
+    expect(rejected).toHaveLength(15);
+    expect(rejected[0].body.message).toContain('Siro đào');
+    expect(await stock('Siro đào')).toMatchObject({ quantity: 120, reserved: 120 });
     expect(await prisma.orders.count({ where: { items: { some: { product_id: 6 } } } })).toBe(5);
+    // Menu báo hết món này
+    const menu = await http().get('/products').expect(200);
+    expect(menu.body.find((p: { id: number }) => p.id === 6).stock).toBe(0);
+  });
+
+  it('đơn bị từ chối vì thiếu nguyên liệu thì không giữ chỗ nguyên liệu nào khác (rollback)', async () => {
+    const before = await stock('Ly nhựa');
+    await order({ items: [{ productId: 6, size: 'M', quantity: 1 }] }).expect(409); // siro đào đã hết
+    expect(await stock('Ly nhựa')).toMatchObject({ reserved: before.reserved });
   });
 
   it('GET /orders/me chỉ trả đơn của mình; xem đơn người khác → 404', async () => {
     const other = await register(app, 'other@test.vn');
     const mine = await http().get('/orders/me').set(bearer(token)).expect(200);
-    expect(mine.body).toHaveLength(2);
+    expect(mine.body).toHaveLength(2); // 2 đơn tạo thành công ở trên
     await http().get(`/orders/${mine.body[0].id}`).set(bearer(other)).expect(404);
     expect((await http().get('/orders/me').set(bearer(other)).expect(200)).body).toEqual([]);
   });

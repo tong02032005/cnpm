@@ -27,6 +27,10 @@ describe('Payments API', () => {
   };
   const status = async (id: number) => (await prisma.orders.findUniqueOrThrow({ where: { id } })).status;
   const points = async () => (await http().get('/auth/me').set(bearer(token))).body.loyaltyPoints as number;
+  const coffee = async () => {
+    const s = await prisma.stocks.findUniqueOrThrow({ where: { name: 'Cà phê hạt' } });
+    return { quantity: s.quantity, reserved: s.reserved };
+  };
   const setStatus = (t: string, id: number, s: string) => http().patch(`/orders/${id}/status`).set(bearer(t)).send({ status: s });
 
   it('thiếu Idempotency-Key → 400; phương thức lạ (tiền mặt) → 400', async () => {
@@ -76,15 +80,29 @@ describe('Payments API', () => {
     await setStatus(staff, orderId, 'CANCELLED').expect(409); // COMPLETED là trạng thái kết thúc
   });
 
+  it('đơn COMPLETED mới trừ nguyên liệu thật khỏi kho, và chỉ trừ một lần', async () => {
+    const before = await coffee();
+    const orderId = await newOrder(); // Latte S ×2: 2 × 14 g cà phê
+    expect(await coffee()).toEqual({ quantity: before.quantity, reserved: before.reserved + 28 });
+    await pay('k-consume', { orderId, method: 'CARD' }).expect(201);
+    for (const s of ['PREPARING', 'READY']) await setStatus(staff, orderId, s).expect(200);
+    expect((await coffee()).quantity).toBe(before.quantity); // đang pha: vẫn chỉ giữ chỗ
+
+    await setStatus(staff, orderId, 'COMPLETED').expect(200);
+    expect(await coffee()).toEqual({ quantity: before.quantity - 28, reserved: before.reserved });
+    await setStatus(staff, orderId, 'COMPLETED').expect(409); // không hoàn thành lần 2
+    expect((await coffee()).quantity).toBe(before.quantity - 28);
+  });
+
   it('phân quyền: khách không tự chuyển PREPARING, STAFF không tự đánh dấu PAID → 403', async () => {
     const orderId = await newOrder();
     await setStatus(token, orderId, 'PREPARING').expect(403);
     await setStatus(staff, orderId, 'PAID').expect(403);
   });
 
-  it('hủy đơn đã PAID: hoàn tiền, hoàn kho, thu hồi điểm, trả lượt mã khuyến mãi', async () => {
+  it('hủy đơn đã PAID: hoàn tiền, trả chỗ nguyên liệu, thu hồi điểm, trả lượt mã khuyến mãi', async () => {
     const before = await points();
-    const stock = (await prisma.products.findUniqueOrThrow({ where: { id: 4 } })).stock;
+    const stock = await coffee();
     const res = await http()
       .post('/orders')
       .set(bearer(token))
@@ -96,7 +114,7 @@ describe('Payments API', () => {
 
     await setStatus(token, res.body.id, 'CANCELLED').expect(200);
     expect(await points()).toBe(before);
-    expect((await prisma.products.findUniqueOrThrow({ where: { id: 4 } })).stock).toBe(stock);
+    expect(await coffee()).toEqual(stock); // kho thật không đổi, phần giữ chỗ được trả lại
     expect((await prisma.promotions.findUniqueOrThrow({ where: { code: 'WELCOME10' } })).used_count).toBe(used - 1);
     expect((await prisma.payments.findFirstOrThrow({ where: { order_id: res.body.id } })).status).toBe('REFUNDED');
   });
